@@ -40,5 +40,14 @@ check "tampered -> cookie cleared" "$(curl -s -D - -o /dev/null -H "Cookie: port
 
 check "garbage -> 401" "$(status -H "Cookie: portier_session=nope" $BASE/protected)" 401
 
+body=$(curl -s -H "Cookie: Portier_Session=$good; theme=dark" $BASE/protected)
+check "mixed-case cookie name is verified" "$(echo "$body" | grep '^uid=')" "uid=user"
+check "mixed-case cookie name is stripped" "$(echo "$body" | grep '^cookie=')" "cookie=theme=dark"
+
+unknown_kid="$(printf '{"typ":"JWT","alg":"ES256","kid":"nope"}' | base64 -w0 | tr '+/' '-_' | tr -d '=').$(echo "$good" | cut -d. -f2).$(echo "$good" | cut -d. -f3)"
+check "unknown kid -> 401" "$(status -H "Cookie: portier_session=$unknown_kid" $BASE/protected)" 401
+check "unknown kid again -> 401 (negative cache)" "$(status -H "Cookie: portier_session=$unknown_kid" $BASE/protected)" 401
+check "tampered -> cookie cleared on the domain" "$(curl -s -D - -o /dev/null -H "Cookie: portier_session=$tampered" $BASE/protected | grep -c 'Set-Cookie: portier_session=; Domain=example.org')" 1
+
 [ $fail -eq 0 ] && echo "ALL OK" || echo "$fail FAILED"
 exit $fail

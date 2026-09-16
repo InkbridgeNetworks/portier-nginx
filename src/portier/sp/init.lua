@@ -11,6 +11,24 @@ local token = require "portier.token"
 
 local _M = {}
 
+--- Stop nginx at init when a required service provider setting is unset
+---
+--- @param value any    Setting value
+--- @param name string  Setting name for the message
+local function _require_set(value, name)
+    if value == nil or value == "" then
+        error("portier sp: " .. name .. " is not set in conf.lua")
+    end
+end
+
+_require_set(config.sp.issuer, "sp.issuer")
+_require_set(config.sp.audience[1], "sp.audience")
+_require_set(config.sp.jwks_url, "sp.jwks_url")
+_require_set(config.sp.cookie_domain, "sp.cookie_domain")
+if config.sp.anonymous == "redirect" then
+    _require_set(config.sp.login_url, "sp.login_url")
+end
+
 --- Turn a list of strings into a set keyed by the string
 ---
 --- @param list table List of strings

@@ -23,6 +23,20 @@ local KEY_DOCUMENT = "jwks"
 --- Shared dict key prefix for a resolved PEM, followed by the kid
 local KEY_PEM_PREFIX = "pem:"
 
+--- Shared dict key prefix for a kid the key set did not contain
+local KEY_MISS_PREFIX = "miss:"
+
+--- Shared dict key that serialises refetches across workers
+local KEY_FETCH_LOCK = "fetch_lock"
+
+--- Seconds a refetch lock is held before it expires on its own
+local FETCH_LOCK_TTL = 5
+
+--- Key type, curve and use a signing key in the set must declare
+local KEY_TYPE = "EC"
+local KEY_CURVE = "P-256"
+local KEY_USE = "sig"
+
 --- Read a JWKS from a file:// URL
 ---
 --- @param path string Path after file://
@@ -104,15 +118,21 @@ local function _document_get()
     return _document_load()
 end
 
---- Find the JWK with a given kid in a JWKS document
+--- Find the ES256 signing key with a given kid in a JWKS document
+---
+--- A key with the right kid but the wrong type, curve or use is ignored, so
+--- a key set that also publishes other keys cannot steer verification onto
+--- one of them.
 ---
 --- @param doc table JWKS document
 --- @param kid string Key id
---- @return table|nil The JWK, or nil when no key carries the kid
+--- @return table|nil The JWK, or nil when no signing key carries the kid
 local function _jwk_find(doc, kid)
     for i = 1, #doc.keys do
-        if doc.keys[i].kid == kid then
-            return doc.keys[i]
+        local key = doc.keys[i]
+        if type(key) == "table" and key.kid == kid and key.kty == KEY_TYPE
+            and key.crv == KEY_CURVE and key.use == KEY_USE then
+            return key
         end
     end
     return nil
@@ -145,27 +165,40 @@ function _M.key_by_kid(kid)
         return pem
     end
 
-    -- 2. Look the kid up in the cached document.
+    -- 2. A kid that missed recently is refused without any fetch, so a
+    --    flood of made-up kids costs one fetch per jwks_miss_ttl window.
+    if ngx.shared.portier_jwks:get(KEY_MISS_PREFIX .. kid) then
+        return nil, "kid not in JWKS"
+    end
+
+    -- 3. Look the kid up in the cached document.
     local doc, err = _document_get()
     if not doc then
         return nil, err
     end
     local jwk = _jwk_find(doc, kid)
 
-    -- 3. Not there: the identity provider may have rotated. Refetch once.
+    -- 4. Not there: the identity provider may have rotated. Refetch once,
+    --    and only one worker at a time: `add` fails while another holds
+    --    the lock, and that worker waits for the winner's document.
     if not jwk then
-        ngx.shared.portier_jwks:delete(KEY_DOCUMENT)
-        doc, err = _document_load()
-        if not doc then
-            return nil, err
+        local locked = ngx.shared.portier_jwks:add(KEY_FETCH_LOCK, true, FETCH_LOCK_TTL)
+        if locked then
+            ngx.shared.portier_jwks:delete(KEY_DOCUMENT)
+            doc, err = _document_load()
+            ngx.shared.portier_jwks:delete(KEY_FETCH_LOCK)
+            if not doc then
+                return nil, err
+            end
         end
         jwk = _jwk_find(doc, kid)
         if not jwk then
+            ngx.shared.portier_jwks:set(KEY_MISS_PREFIX .. kid, true, config.sp.jwks_miss_ttl)
             return nil, "kid not in JWKS"
         end
     end
 
-    -- 4. Convert once and cache the PEM for the document's lifetime.
+    -- 5. Convert once and cache the PEM for the document's lifetime.
     pem, err = _jwk_to_pem(jwk)
     if not pem then
         return nil, "cannot convert JWK to PEM: " .. err

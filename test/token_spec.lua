@@ -123,6 +123,40 @@ do
     check("unknown kid refused", got == nil and why:find("no key for kid"), why)
 end
 
+-- 3g. iat in the future (beyond leeway) is refused.
+do
+    local future = { sub = "u@example.org", uid = "u", groups = {}, grants = {}, support_tier = nil }
+    local t2 = token.mint(future, key, "http://127.0.0.1:18082")
+    local validators = require "resty.jwt-validators"
+    validators.set_system_clock(function() return ngx.time() - 3600 end)
+    local got, why = token.verify(t2, key_by_kid, token.claim_spec())
+    check("future iat refused", got == nil, why)
+    validators.set_system_clock(ngx.time)
+end
+
+-- 3h. Lifetime above sp.max_lifetime is refused even when otherwise valid.
+do
+    local cfg = require "portier.config"
+    local saved = cfg.idp.token.lifetime
+    cfg.idp.token.lifetime = cfg.sp.max_lifetime + 1
+    local long = token.mint({ sub = "u@example.org", uid = "u", groups = {}, grants = {} }, key, "http://127.0.0.1:18082")
+    cfg.idp.token.lifetime = saved
+    local got, why = token.verify(long, key_by_kid, token.claim_spec())
+    check("over-long lifetime refused", got == nil, why)
+end
+
+-- 3i. Non-string or oversized kid is refused before key lookup.
+do
+    local weird = jwt:sign(key.pem, { header = { typ = "JWT", alg = "ES256", kid = { evil = true } }, payload = claims })
+    local looked_up = false
+    local got, why = token.verify(weird, function(k) looked_up = true; return key_by_kid(k) end, spec)
+    check("table kid refused", got == nil and why:find("malformed"), why)
+    check("table kid never looked up", looked_up == false)
+    local long = jwt:sign(key.pem, { header = { typ = "JWT", alg = "ES256", kid = string.rep("k", 300) }, payload = claims })
+    got, why = token.verify(long, key_by_kid, spec)
+    check("oversized kid refused", got == nil and why:find("malformed"), why)
+end
+
 -- 3g. Garbage.
 do
     local got, why = token.verify("not.a.jwt", key_by_kid, spec)

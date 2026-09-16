@@ -11,12 +11,14 @@ check() {
 	if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1: expected [$3] got [$2]"; fail=$((fail + 1)); fi
 }
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+# Every login start below claims to come from the login page itself.
+SFS="Sec-Fetch-Site: same-origin"
 header() { curl -s -D - -o /dev/null "$@" | grep -i "^$1:" | sed "s/^[^:]*: //" | tr -d '\r'; }
 # login <email> [return_to] -> prints the portier_login cookie value
 login() {
 	url="$IDP/.portier/login?email=$1"
 	[ $# -gt 1 ] && url="$url&return_to=$(printf %s "$2" | sed 's/:/%3A/g; s#/#%2F#g')"
-	curl -s -D - -o /dev/null "$url" | grep -i '^Set-Cookie: portier_login=' | sed 's/^[^=]*=//; s/;.*//' | tr -d '\r'
+	curl -s -D - -o /dev/null -H "$SFS" "$url" | grep -i '^Set-Cookie: portier_login=' | sed 's/^[^=]*=//; s/;.*//' | tr -d '\r'
 }
 nonce_of() { echo "$1" | cut -d'|' -f1; }
 # verify <email> <login-cookie> [alg] [nonce] -> prints the response headers
@@ -30,15 +32,24 @@ payload_of() { echo "$1" | cut -d. -f2 | tr '_-' '/+' | awk '{ l = length($0) % 
 
 # Login.
 check "login page served" "$(status $IDP/.portier/login)" 200
-check "bad address -> back to login with error" "$(header Location "$IDP/.portier/login?email=not-an-address" | cut -d'#' -f1)" "http://127.0.0.1:18082/.portier/login"
-loc=$(header Location "$IDP/.portier/login?email=supported@example.org")
+check "bad address -> back to login with error" "$(header Location -H "$SFS" "$IDP/.portier/login?email=not-an-address" | cut -d'#' -f1)" "http://127.0.0.1:18082/.portier/login"
+loc=$(header Location -H "$SFS" "$IDP/.portier/login?email=supported@example.org")
 check "good address -> broker auth endpoint" "$(echo "$loc" | cut -d'?' -f1)" "$BROKER/auth"
 query=$(echo "$loc" | cut -d'?' -f2 | tr '&' '\n')
 check "broker request names us as client" "$(echo "$query" | grep -c '^client_id=http%3A%2F%2F127.0.0.1%3A18082$')" 1
 check "broker request uses form_post id_token" "$(echo "$query" | grep -c -E '^(response_mode=form_post|response_type=id_token)$')" 2
 lc=$(login supported@example.org)
 check "login cookie carries nonce and return" "$(echo "$lc" | grep -c '^[0-9a-f]\{32\}|')" 1
-check "login cookie attributes" "$(curl -s -D - -o /dev/null "$IDP/.portier/login?email=supported@example.org" | grep -i '^Set-Cookie: portier_login' | grep -c 'Path=/.portier; HttpOnly; Secure; SameSite=None; Max-Age=600')" 1
+check "login cookie attributes" "$(curl -s -D - -o /dev/null -H "$SFS" "$IDP/.portier/login?email=supported@example.org" | grep -i '^Set-Cookie: portier_login' | grep -c 'Path=/.portier; HttpOnly; Secure; SameSite=None; Max-Age=600')" 1
+
+# Login start origin gate.
+check "cross-site login start -> 403" "$(status -H "Sec-Fetch-Site: cross-site" "$IDP/.portier/login?email=supported@example.org")" 403
+check "login start with no origin evidence -> 403" "$(status "$IDP/.portier/login?email=supported@example.org")" 403
+check "same-site login start (RT's form) -> 302" "$(status -H "Sec-Fetch-Site: same-site" "$IDP/.portier/login?email=supported@example.org")" 302
+check "old browser with audience Referer -> 302" "$(status -H "Referer: https://rt.example.org/" "$IDP/.portier/login?email=supported@example.org")" 302
+check "old browser with foreign Referer -> 403" "$(status -H "Referer: https://evil.example.com/" "$IDP/.portier/login?email=supported@example.org")" 403
+check "repeated email arg -> 400" "$(status -H "$SFS" "$IDP/.portier/login?email=a@example.org&email=b@example.org")" 400
+check "bare email arg -> 400" "$(status -H "$SFS" "$IDP/.portier/login?email")" 400
 
 # Verify: happy path.
 hdrs=$(verify supported@example.org "$lc")
@@ -71,6 +82,12 @@ check "employee token names the group" "$(payload_of "$staff" | grep -c 'cn=empl
 # return_to handling.
 check "allowed return_to honoured" "$(verify supported@example.org "$(login supported@example.org https://rt.example.org/Ticket/1)" | grep -i '^Location:' | sed 's/^[^:]*: //' | tr -d '\r')" "https://rt.example.org/Ticket/1"
 check "foreign return_to falls back to landing" "$(verify supported@example.org "$(login supported@example.org https://evil.example.com/)" | grep -i '^Location:' | sed 's/^[^:]*: //' | tr -d '\r')" "https://rt.example.org/"
+check "backslash authority return_to falls back to landing" "$(verify supported@example.org "$(login supported@example.org 'https://evil.example%5Cx.example.org/')" | grep -i '^Location:' | sed 's/^[^:]*: //' | tr -d '\r')" "https://rt.example.org/"
+check "userinfo return_to falls back to landing" "$(verify supported@example.org "$(login supported@example.org 'https://rt.example.org@evil.example.com/')" | grep -i '^Location:' | sed 's/^[^:]*: //' | tr -d '\r')" "https://rt.example.org/"
+check "suffix-only host return_to falls back to landing" "$(verify supported@example.org "$(login supported@example.org 'https://rt.example.org.evil.example.com/')" | grep -i '^Location:' | sed 's/^[^:]*: //' | tr -d '\r')" "https://rt.example.org/"
+check "upper-case audience host is honoured" "$(verify supported@example.org "$(login supported@example.org 'https://RT.example.org/x')" | grep -i '^Location:' | sed 's/^[^:]*: //' | tr -d '\r')" "https://RT.example.org/x"
+check "logout with backslash return_to -> landing" "$(header Location "$IDP/.portier/logout?return_to=https://evil.example%5Cx.example.org/")" "https://rt.example.org/"
+check "logout with audience return_to -> honoured" "$(header Location "$IDP/.portier/logout?return_to=https://rt.example.org/bye")" "https://rt.example.org/bye"
 
 # JWKS and logout.
 kid=$(payload_of "$sess" >/dev/null; echo "$sess" | cut -d. -f1 | tr '_-' '/+' | awk '{ l = length($0) % 4; if (l) $0 = $0 substr("===", 1, 4 - l); print }' | base64 -d 2>/dev/null | grep -o '"kid":"[^"]*"')

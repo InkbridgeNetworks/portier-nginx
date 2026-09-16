@@ -26,12 +26,16 @@ resty -I "$WORK/src" -I "$WORK/test" -e '
 	print("kid " .. key.kid)
 '
 echo "== nginx"
-mkdir -p /tmp/nginx-body /var/cache/nginx/portier /etc/portier/webroot
+mkdir -p /tmp/nginx-body /tmp/nginx-pass-body /var/cache/nginx/portier /etc/portier/webroot
 cp "$WORK/webroot/index.html" /etc/portier/webroot/
 /usr/local/openresty/nginx/sbin/nginx -c "$WORK/test/nginx.conf"
+/usr/local/openresty/nginx/sbin/nginx -c "$WORK/test/nginx-pass.conf"
 echo "== sp_spec"
 sh test/sp_spec.sh; rc1=$?
+echo "== sp_pass_spec"
+sh test/sp_pass_spec.sh; rc3=$?
 echo "== idp_spec"
 sh test/idp_spec.sh; rc2=$?
 /usr/local/openresty/nginx/sbin/nginx -c "$WORK/test/nginx.conf" -s quit
-[ $rc1 -eq 0 ] && [ $rc2 -eq 0 ]
+/usr/local/openresty/nginx/sbin/nginx -c "$WORK/test/nginx-pass.conf" -s quit
+[ $rc1 -eq 0 ] && [ $rc2 -eq 0 ] && [ $rc3 -eq 0 ]

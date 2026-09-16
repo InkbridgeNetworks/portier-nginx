@@ -99,13 +99,16 @@ local defaults = {
         login_timeout = 600,
 
         -- Where the browser lands after a successful login when the login
-        -- request carried no return URL.
+        -- request carried no return URL, or a URL that is not an audience.
         landing_url = "/",
     },
 
     sp = {
-        -- Cookie the token arrives in. Must match idp.cookie.name.
+        -- Cookie the token arrives in. Must match idp.cookie.name, and the
+        -- domain must match idp.cookie.domain so the SP can expire the cookie
+        -- the IdP set. No default for the domain.
         cookie_name = "portier_session",
+        cookie_domain = nil,
 
         -- Absolute URL of the IdP's JWKS document, https:// or file:// for an
         -- offline test, and how long a fetched document is cached in the
@@ -113,6 +116,14 @@ local defaults = {
         -- dict: `lua_shared_dict portier_jwks 1m;`.
         jwks_url = nil,
         jwks_cache_ttl = 600,
+        -- Seconds a kid that is not in the key set stays remembered as
+        -- missing, so a flood of tokens with made-up kids costs one fetch per
+        -- window rather than one per request.
+        jwks_miss_ttl = 30,
+
+        -- Longest token lifetime, exp minus iat, the SP accepts. Caps a
+        -- misconfigured identity provider. Matches idp.token.lifetime.
+        max_lifetime = 64800,
 
         -- `iss` the token must carry, and the audiences this service provider
         -- answers to: the token's `aud` list must contain one of them. No

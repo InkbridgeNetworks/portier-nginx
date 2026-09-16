@@ -29,8 +29,14 @@ This repository builds two LuaRocks packages (rocks):
    redirects the browser to the login page of the identity provider with the
    page URL in `return_to`.
 2. The user types an email address on the login page. The identity provider
-   checks the email address, sets a short-lived cookie that holds a nonce and
-   the return URL, and sends the browser to the broker.
+   accepts the login start only from its own pages or from a service provider
+   under the same site, by the `Sec-Fetch-Site` header or, for a browser
+   without that header, by the `Referer`. A page on another site cannot start
+   a login in the browser. The identity provider then checks the email
+   address, sets a short-lived cookie that holds a nonce and the return URL,
+   and sends the browser to the broker. The identity provider accepts a
+   `return_to` only when the origin of the URL is one of the audiences in
+   `idp.token.audience` or the identity provider itself.
 3. The broker verifies the email address and posts an RS256 `id_token` back
    to the verify location of the identity provider.
 4. The identity provider verifies the `id_token` against the published keys
@@ -47,10 +53,16 @@ This repository builds two LuaRocks packages (rocks):
    browser to the return URL.
 6. Every request to a service provider now carries the cookie. The service
    provider verifies the signature against the JSON Web Key Set (JWKS) of the
-   identity provider, then checks `iss`, `aud`, and `exp`. The service
-   provider then applies the policy of the application, strips the cookie
-   from the `Cookie` header, and sets `$portier_nginx_uid`. The site passes
-   `$portier_nginx_uid` to the application as `REMOTE_USER`.
+   identity provider, then checks `iss`, `aud`, `iat`, `exp`, and that the
+   lifetime does not exceed `sp.max_lifetime`. The service provider then
+   applies the policy of the application, strips the cookie from the
+   `Cookie` header, and sets `$portier_nginx_uid`. The site passes
+   `$portier_nginx_uid` to the application as `REMOTE_USER`. When the token
+   holder is in a denied group and `sp.anonymous` is `pass`, the service
+   provider expires the cookie and continues without an identity, so the
+   holder reaches the application's own login rather than a refusal for the
+   life of the token. A missing grant is refused with status 403 in every
+   mode.
 
 The identity provider asserts who the user is and what the user is entitled
 to. Each service provider decides which users to admit. A customer whose
@@ -152,8 +164,10 @@ toolchain at install time.
    `idp.ldap.bind_pw_file` names.
 3. Include `portier-idp-http.conf` in the http block, and include
    `portier-idp.conf` in the server block that answers on the origin of the
-   identity provider. When TLS terminates on a proxy in front of nginx, set
-   `idp.public_origin` in `conf.lua`.
+   identity provider. Set `idp.public_origin` in `conf.lua` to the origin the
+   browser sees, and `idp.cookie.domain` to the parent domain the identity
+   provider shares with the service providers. nginx does not start while
+   either is unset.
 4. Register the origin with the broker as an allowed origin.
 
 ## Service provider
@@ -172,8 +186,10 @@ toolchain at install time.
        }
 
 3. In `conf.lua`, set `sp.jwks_url` to the JWKS URL of the identity
-   provider, `sp.issuer` to the origin of the identity provider, and
-   `sp.audience` to the audience of the application. Then set the policy:
+   provider, `sp.issuer` to the origin of the identity provider,
+   `sp.audience` to the audience of the application, and `sp.cookie_domain`
+   to the same parent domain as `idp.cookie.domain`, so the service provider
+   can expire the cookie the identity provider set. Then set the policy:
    `sp.policy.grants_required`, `sp.policy.groups_denied`, and a refusal
    message per grant in `sp.refusal_messages`.
 
@@ -187,7 +203,10 @@ container and needs docker. On the first run, `test/run.sh` generates a test
 signing key and a broker key.
 
  * **`test/token_spec.lua`:** tests the token module in-process.
- * **`test/sp_spec.sh`:** runs curl against a service provider vhost.
+ * **`test/sp_spec.sh`:** runs curl against a service provider vhost in
+   `deny` mode.
+ * **`test/sp_pass_spec.sh`:** runs curl against a second service provider
+   vhost in `pass` mode.
  * **`test/idp_spec.sh`:** runs curl against an identity provider vhost that
    uses a broker stub and a directory stub, then presents the minted cookie
    to the service provider vhost.

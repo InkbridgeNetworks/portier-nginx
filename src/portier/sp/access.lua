@@ -30,7 +30,10 @@ local byte_space = string.byte(" ")
 ---
 --- Walks the header by index rather than with a pattern, because this runs
 --- on every request. Cookie segments are separated by ";" with optional
---- spaces, and a segment is ours when the text up to its "=" is `name`.
+--- spaces, and a segment is ours when the text up to its "=", lower-cased,
+--- is `name`. nginx matches `$cookie_<name>` without regard to case, so the
+--- strip must too, or a token sent as `Portier_Session` would be verified
+--- and still reach the application.
 ---
 --- Worked example: name = portier_session
 ---   in:  RT_SID=abc; portier_session=eyJ...; theme=dark
@@ -61,8 +64,8 @@ local function _cookie_header_strip(header, name)
             seg_stop = seg_stop - 1
         end
         if seg_stop >= seg_start then
-            -- Ours when the segment starts with "<name>=".
-            local is_ours = string.sub(header, seg_start, seg_start + name_len) == name .. "="
+            -- Ours when the segment starts with "<name>=", in any case.
+            local is_ours = string.lower(string.sub(header, seg_start, seg_start + name_len)) == name .. "="
             if not is_ours then
                 kept[#kept + 1] = string.sub(header, seg_start, seg_stop)
             end
@@ -74,8 +77,13 @@ local function _cookie_header_strip(header, name)
 end
 
 --- Expire the session cookie in the browser
+---
+--- A cookie is identified by name, domain and path, so the clear names the
+--- domain the identity provider set, or the browser keeps the real cookie
+--- and gains an empty host-only one.
 local function _cookie_clear()
-    ngx.header["Set-Cookie"] = config.sp.cookie_name .. "=; Path=/; HttpOnly; Secure; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+    ngx.header["Set-Cookie"] = config.sp.cookie_name .. "=; Domain=" .. config.sp.cookie_domain
+        .. "; Path=/; HttpOnly; Secure; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
 end
 
 --- Answer 401 to a request with no usable identity
@@ -114,16 +122,21 @@ local function _policy_refuse(message)
     return ngx.exit(ngx.HTTP_FORBIDDEN)
 end
 
+--- Policy outcomes
+local POLICY_PASS = "pass"
+local POLICY_GROUP_DENIED = "group_denied"
+local POLICY_GRANT_MISSING = "grant_missing"
+
 --- Apply this service provider's policy to a verified token
 ---
 --- @param claims table Verified payload
---- @return boolean True when the token passes
---- @return string|nil Refusal message when it does not
+--- @return string One of POLICY_PASS, POLICY_GROUP_DENIED, POLICY_GRANT_MISSING
+--- @return string|nil Refusal message for a refusal
 local function _policy_check(claims)
     local groups = claims.groups or {}
     for i = 1, #groups do
         if sp.groups_denied[groups[i]] then
-            return false, config.sp.refusal_messages.groups_denied
+            return POLICY_GROUP_DENIED, config.sp.refusal_messages.groups_denied
         end
     end
 
@@ -135,11 +148,11 @@ local function _policy_check(claims)
     for i = 1, #sp.grants_required do
         local grant = sp.grants_required[i]
         if not held[grant] then
-            return false, config.sp.refusal_messages[grant]
+            return POLICY_GRANT_MISSING, config.sp.refusal_messages[grant]
         end
     end
 
-    return true
+    return POLICY_PASS
 end
 
 local _M = {}
@@ -166,14 +179,24 @@ function _M.run()
     --    browser so the next request is plainly anonymous.
     local claims, err = token.verify(session, jwks.key_by_kid, sp.claim_spec)
     if not claims then
-        ngx.log(ngx.WARN, "session token refused: ", err)
+        ngx.log(ngx.WARN, "session token refused: ", string.format("%q", err))
         _cookie_clear()
         return anonymous_handle[config.sp.anonymous]()
     end
 
-    -- 4. Policy over the claims.
-    local passed, message = _policy_check(claims)
-    if not passed then
+    -- 4. Policy over the claims. A denied group in "pass" mode is treated as
+    --    no token at all: the cookie is cleared and the request continues
+    --    anonymously, so a member of the group still reaches the
+    --    application's own login rather than a wall of 403s for the life of
+    --    the token. A missing grant is refused in every mode, because the
+    --    holder is a user of this application whose entitlement lapsed.
+    local outcome, message = _policy_check(claims)
+    if outcome == POLICY_GROUP_DENIED and config.sp.anonymous == "pass" then
+        ngx.log(ngx.INFO, "policy discarded token of ", claims.uid, ": denied group, continuing anonymously")
+        _cookie_clear()
+        return
+    end
+    if outcome ~= POLICY_PASS then
         ngx.log(ngx.INFO, "policy refused ", claims.uid, ": ", message or "no message")
         return _policy_refuse(message)
     end

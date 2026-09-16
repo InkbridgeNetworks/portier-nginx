@@ -140,12 +140,13 @@ function _M.run()
         ngx.log(ngx.WARN, "no post args")
         return ngx.exit(ngx.HTTP_UNAUTHORIZED)
     end
-    if args.error then
-        ngx.log(ngx.WARN, "broker error: ", args.error)
-        return _login_error(nil, "email authentication failed: " .. tostring(args.error))
+    if args.error ~= nil then
+        ngx.log(ngx.WARN, "broker error: ", idp.log_quote(args.error))
+        return _login_error(nil, "email authentication failed at the broker")
     end
-    if not args.id_token then
-        ngx.log(ngx.WARN, "missing id_token")
+    local id_token = idp.arg_string(args.id_token)
+    if not id_token then
+        ngx.log(ngx.WARN, "missing or malformed id_token")
         return ngx.exit(ngx.HTTP_UNAUTHORIZED)
     end
 
@@ -157,9 +158,9 @@ function _M.run()
     end
 
     -- 3. Verify the id_token.
-    local payload, err = _id_token_verify(args.id_token, nonce)
+    local payload, err = _id_token_verify(id_token, nonce)
     if not payload then
-        ngx.log(ngx.WARN, "id_token refused: ", err)
+        ngx.log(ngx.WARN, "id_token refused: ", idp.log_quote(err))
         _login_cookie_clear()
         return _login_error(nil, "email authentication failed, please contact support")
     end
@@ -167,8 +168,8 @@ function _M.run()
     -- 4. The verified address is the subject. Check it again in case the
     --    broker's idea of an address differs from ours.
     local email = payload.sub
-    if not email_validate.validemail(email) then
-        ngx.log(ngx.WARN, "broker returned invalid address: ", email)
+    if type(email) ~= "string" or not email_validate.validemail(email) then
+        ngx.log(ngx.WARN, "broker returned invalid address: ", idp.log_quote(email))
         _login_cookie_clear()
         return _login_error(email, "email is invalid")
     end

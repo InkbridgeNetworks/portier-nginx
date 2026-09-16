@@ -22,6 +22,7 @@ return {
         issuer = "http://127.0.0.1:18082",
         audience = "https://rt.example.org",
         cookie_domain = "example.org",
+        anonymous = "pass",
         jwks_url = "file:///work/test/fixtures/jwks.json",
         login_url = "https://idp.example.org/.portier/login",
         policy = {

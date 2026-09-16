@@ -35,6 +35,9 @@ local ALG = "ES256"
 --- Hex characters of the public key digest that make up a derived kid
 local KID_HEX_LENGTH = 16
 
+--- Longest kid a token header may carry before verification refuses it
+local KID_MAX_LENGTH = 128
+
 --- Read a whole file
 ---
 --- @param path string Path of the file
@@ -158,19 +161,37 @@ function _M.mint(claims, key, issuer)
     return ret
 end
 
+--- Whether a token's lifetime is within `sp.max_lifetime`
+---
+--- A validator over the whole payload, so a token whose identity provider
+--- was misconfigured with a long lifetime is still refused by the relying
+--- party.
+---
+--- @param payload table Decoded payload
+--- @return boolean
+local function _lifetime_within_max(payload)
+    return type(payload.exp) == "number" and type(payload.iat) == "number"
+        and payload.exp - payload.iat <= config.sp.max_lifetime
+end
+
 --- Build the claim spec a service provider verifies against
 ---
 --- Call once at init from `sp.issuer` and `sp.audience`. `exp` must be
---- present and in the future, `iss` must equal the identity provider's
---- origin, and `aud` must contain one of this service provider's audiences.
+--- present and in the future, `iat` must be present and not in the future,
+--- `iss` must equal the identity provider's origin, `aud` must contain one
+--- of this service provider's audiences, and the lifetime must not exceed
+--- `sp.max_lifetime`.
 ---
 --- @return table Claim spec for `verify`
 function _M.claim_spec()
     return {
         exp = validators.required(validators.is_not_expired()),
-        iat = validators.required(),
+        iat = validators.required(validators.is_not_before()),
         iss = validators.required(validators.equals(config.sp.issuer)),
         aud = validators.required(validators.contains_any_of(config.sp.audience)),
+        __jwt = function(jwt_obj)
+            return _lifetime_within_max(jwt_obj.payload or {})
+        end,
     }
 end
 
@@ -199,14 +220,16 @@ function _M.verify(token, key_by_kid, claim_spec)
         return nil, "unsupported alg " .. tostring(jwt_obj.header.alg)
     end
 
-    -- 3. Resolve the key named by the header.
+    -- 3. Resolve the key named by the header. The kid is attacker-chosen
+    --    text until the signature checks out, so it is type-checked here and
+    --    quoted wherever it is logged.
     local kid = jwt_obj.header.kid
-    if not kid then
-        return nil, "no kid in header"
+    if type(kid) ~= "string" or #kid == 0 or #kid > KID_MAX_LENGTH then
+        return nil, "kid missing or malformed"
     end
     local pem, err = key_by_kid(kid)
     if not pem then
-        return nil, "no key for kid " .. kid .. ": " .. (err or "")
+        return nil, "no key for kid " .. string.format("%q", kid) .. ": " .. (err or "")
     end
 
     -- 4. Signature and claims in one call. verify_jwt_obj runs the claim
