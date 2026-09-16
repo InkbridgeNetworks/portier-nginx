@@ -13,6 +13,8 @@
 -- session token on every request and applies its own policy to the claims.
 -- One host may load both halves; a service provider host loads only `sp`.
 
+local utils = require "portier.utils"
+
 local defaults = {
     idp = {
         -- Public URL of the portier broker that verifies email ownership. The
@@ -169,65 +171,35 @@ local defaults = {
 -- in. Salt renders the file for a host; the container image copies it in.
 local CONF_MODULE = "portier.conf"
 
---- Overlay `override` onto `base` in place
----
---- Sub-tables merge recursively. Scalars and arrays replace, so a conf.lua
---- that sets `idp.nameservers` replaces the whole list rather than appending.
----
---- @param base table     Table that receives the values
---- @param override table Table whose values win
-local function _merge(base, override)
-    for k, v in pairs(override) do
-        if type(v) == "table" and type(base[k]) == "table" then
-            _merge(base[k], v)
-        else
-            base[k] = v
-        end
-    end
-end
-
---- Stop nginx at init with a message that names the config problem
----
---- @param msg string What was wrong with conf.lua
-local function _fail(msg)
-    ngx.log(ngx.EMERG, "portier config: ", msg)
-    error("portier config: " .. msg)
-end
+--- Component name that prefixes every config failure message
+local COMPONENT = "portier config"
 
 local conf_path, search_err = package.searchpath(CONF_MODULE, package.path)
 if not conf_path then
-    _fail("conf.lua not found on lua_package_path as portier.conf: " .. (search_err or ""))
+    utils.fail(COMPONENT, "conf.lua not found on lua_package_path as portier.conf: " .. (search_err or ""))
 end
 
 local chunk, load_err = loadfile(conf_path)
 if not chunk then
-    _fail("cannot load " .. conf_path .. ": " .. load_err)
+    utils.fail(COMPONENT, "cannot load " .. conf_path .. ": " .. load_err)
 end
 
 local override = chunk()
 if type(override) ~= "table" then
-    _fail(conf_path .. " must return a table")
+    utils.fail(COMPONENT, conf_path .. " must return a table")
 end
-_merge(defaults, override)
+-- `table_merge` merges sub-tables and replaces lists. A conf.lua that sets
+-- `idp.nameservers` replaces the whole default list rather than appending to
+-- the default list.
+utils.table_merge(defaults, override)
 
---- Normalise a value that may be one string or a list of strings to a list
----
---- conf.lua may write `audience = "https://rt.example.org"` for one
---- audience or a list for several. Every consumer sees a list.
----
---- @param value string|table|nil Value from the merged config
---- @return table List
-local function _list_normalise(value)
-    if type(value) == "string" then
-        return { value }
-    end
-    return value or {}
-end
-
-defaults.idp.ldap.servers = _list_normalise(defaults.idp.ldap.servers)
-defaults.idp.token.audience = _list_normalise(defaults.idp.token.audience)
-defaults.sp.audience = _list_normalise(defaults.sp.audience)
-defaults.sp.policy.grants_required = _list_normalise(defaults.sp.policy.grants_required)
-defaults.sp.policy.groups_denied = _list_normalise(defaults.sp.policy.groups_denied)
+-- conf.lua may set `audience = "https://rt.example.org"` for one audience or
+-- a list for several. `list_normalise` turns each setting below into a list,
+-- so every consumer reads a list.
+defaults.idp.ldap.servers = utils.list_normalise(defaults.idp.ldap.servers)
+defaults.idp.token.audience = utils.list_normalise(defaults.idp.token.audience)
+defaults.sp.audience = utils.list_normalise(defaults.sp.audience)
+defaults.sp.policy.grants_required = utils.list_normalise(defaults.sp.policy.grants_required)
+defaults.sp.policy.groups_denied = utils.list_normalise(defaults.sp.policy.groups_denied)
 
 return defaults

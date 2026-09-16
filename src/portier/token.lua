@@ -26,6 +26,7 @@ local digest = require "resty.openssl.digest"
 local cjson = require "cjson.safe"
 
 local config = require "portier.config"
+local utils = require "portier.utils"
 
 local _M = {}
 
@@ -37,21 +38,6 @@ local KID_HEX_LENGTH = 16
 
 --- Longest kid a token header may carry before verification refuses it
 local KID_MAX_LENGTH = 128
-
---- Read a whole file
----
---- @param path string Path of the file
---- @return string|nil Contents, or nil on error
---- @return string|nil Error
-local function _file_read(path)
-    local f, err = io.open(path, "r")
-    if not f then
-        return nil, err
-    end
-    local data = f:read("*a")
-    f:close()
-    return data
-end
 
 --- Derive a key id from a public key
 ---
@@ -93,9 +79,9 @@ end
 --- @return table|nil { pem = <private PEM>, kid = <key id>, jwk = <public JWK> }
 --- @return string|nil Error
 function _M.key_load()
-    local pem, err = _file_read(config.idp.token.key_file)
+    local pem, err = utils.file_read(config.idp.token.key_file)
     if not pem then
-        return nil, "cannot read signing key " .. config.idp.token.key_file .. ": " .. err
+        return nil, "cannot read signing key: " .. err
     end
 
     local pk

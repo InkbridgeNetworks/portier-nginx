@@ -19,6 +19,7 @@
 --                                  with no identity
 
 local config = require "portier.config"
+local utils = require "portier.utils"
 local token = require "portier.token"
 local jwks = require "portier.sp.jwks"
 local sp = require "portier.sp.init"
@@ -82,8 +83,8 @@ end
 --- domain the identity provider set, or the browser keeps the real cookie
 --- and gains an empty host-only one.
 local function _cookie_clear()
-    ngx.header["Set-Cookie"] = config.sp.cookie_name .. "=; Domain=" .. config.sp.cookie_domain
-        .. "; Path=/; HttpOnly; Secure; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+    utils.cookie_clear(config.sp.cookie_name,
+        "Domain=" .. config.sp.cookie_domain .. "; Path=/; HttpOnly; Secure")
 end
 
 --- Answer 401 to a request with no usable identity

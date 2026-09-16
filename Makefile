@@ -18,11 +18,11 @@ endif
 
 # Two rocks from one tree. Both install modules under the `portier.` prefix, so
 # the module list for each rock is built from an explicit file list rather than
-# from a per-package directory: portier-sp takes src/portier/sp/ plus the two
+# from a per-package directory: portier-sp takes src/portier/sp/ plus the
 # shared modules, portier-idp takes src/portier/idp/.
 PACKAGES = portier-sp portier-idp
 
-portier-sp_FILES = $(wildcard src/portier/sp/*.lua) src/portier/config.lua src/portier/token.lua
+portier-sp_FILES = $(wildcard src/portier/sp/*.lua) src/portier/config.lua src/portier/token.lua src/portier/utils.lua
 portier-sp_EXTRA = etc/nginx/portier-sp-http.conf
 portier-idp_FILES = $(wildcard src/portier/idp/*.lua)
 portier-idp_EXTRA = etc/nginx/portier-idp-http.conf etc/nginx/portier-idp.conf webroot/index.html

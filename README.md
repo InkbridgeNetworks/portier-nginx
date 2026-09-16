@@ -93,6 +93,9 @@ The Lua modules are in `src/portier`.
    `lua_package_path`.
  * **`token.lua`:** loads the signing key, mints the session token, defines the
    claim specification, and verifies the session token.
+ * **`utils.lua`:** holds the helpers that both rocks share: file reading,
+   list handling, stopping nginx at init, the required-setting check, request
+   argument checking, log quoting, base64url decoding, and cookie expiry.
  * **`sp/init.lua`:** builds the service provider state once per worker.
  * **`sp/jwks.lua`:** fetches and caches the JWKS of the identity provider.
  * **`sp/access.lua`:** runs the access phase for a protected location.

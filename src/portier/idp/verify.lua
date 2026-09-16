@@ -14,6 +14,7 @@ local pkey = require "resty.openssl.pkey"
 local cjson = require "cjson.safe"
 
 local config = require "portier.config"
+local utils = require "portier.utils"
 local idp = require "portier.idp.init"
 local token = require "portier.token"
 local directory = require "portier.idp.directory"
@@ -29,7 +30,7 @@ local BROKER_IAT_LEEWAY = 10
 
 --- Expire the login cookie
 local function _login_cookie_clear()
-    ngx.header["Set-Cookie"] = idp.LOGIN_COOKIE .. "=; Path=/.portier; HttpOnly; Secure; SameSite=None; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+    utils.cookie_clear(idp.LOGIN_COOKIE, "Path=/.portier; HttpOnly; Secure; SameSite=None")
 end
 
 --- Read the nonce and return URL the login phase stored
@@ -49,15 +50,6 @@ local function _login_cookie_read()
         return nil
     end
     return string.sub(value, 1, bar - 1), ngx.unescape_uri(string.sub(value, bar + 1))
-end
-
---- Send the browser back to the login page with an error
----
---- @param email string|nil Address, when known
---- @param message string   Human-readable reason
-local function _login_error(email, message)
-    local url = idp.origin() .. "/.portier/login#" .. ngx.encode_args({ email = email or "", error = message })
-    return ngx.redirect(url, ngx.HTTP_MOVED_TEMPORARILY)
 end
 
 --- Find the broker's signing key for a kid, as PEM
@@ -141,10 +133,10 @@ function _M.run()
         return ngx.exit(ngx.HTTP_UNAUTHORIZED)
     end
     if args.error ~= nil then
-        ngx.log(ngx.WARN, "broker error: ", idp.log_quote(args.error))
-        return _login_error(nil, "email authentication failed at the broker")
+        ngx.log(ngx.WARN, "broker error: ", utils.log_quote(args.error))
+        return idp.login_error(nil, "email authentication failed at the broker")
     end
-    local id_token = idp.arg_string(args.id_token)
+    local id_token = utils.arg_string(args.id_token)
     if not id_token then
         ngx.log(ngx.WARN, "missing or malformed id_token")
         return ngx.exit(ngx.HTTP_UNAUTHORIZED)
@@ -154,24 +146,24 @@ function _M.run()
     local nonce, return_to = _login_cookie_read()
     if not nonce then
         ngx.log(ngx.WARN, "no login cookie on verify")
-        return _login_error(nil, "login expired, please try again")
+        return idp.login_error(nil, "login expired, please try again")
     end
 
     -- 3. Verify the id_token.
     local payload, err = _id_token_verify(id_token, nonce)
     if not payload then
-        ngx.log(ngx.WARN, "id_token refused: ", idp.log_quote(err))
+        ngx.log(ngx.WARN, "id_token refused: ", utils.log_quote(err))
         _login_cookie_clear()
-        return _login_error(nil, "email authentication failed, please contact support")
+        return idp.login_error(nil, "email authentication failed, please contact support")
     end
 
     -- 4. The verified address is the subject. Check it again in case the
     --    broker's idea of an address differs from ours.
     local email = payload.sub
     if type(email) ~= "string" or not email_validate.validemail(email) then
-        ngx.log(ngx.WARN, "broker returned invalid address: ", idp.log_quote(email))
+        ngx.log(ngx.WARN, "broker returned invalid address: ", utils.log_quote(email))
         _login_cookie_clear()
-        return _login_error(email, "email is invalid")
+        return idp.login_error(email, "email is invalid")
     end
 
     -- 5. Directory lookup: identity and entitlements, or no account.
@@ -183,7 +175,7 @@ function _M.run()
     end
     if not identity then
         _login_cookie_clear()
-        return _login_error(email, "no account for this address, please contact support")
+        return idp.login_error(email, "no account for this address, please contact support")
     end
 
     -- 6. Mint the session token and set it on the shared domain. Max-Age

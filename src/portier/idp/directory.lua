@@ -15,6 +15,7 @@
 local lualdap = require "lualdap"
 
 local config = require "portier.config"
+local utils = require "portier.utils"
 
 local _M = {}
 
@@ -50,37 +51,6 @@ local function _filter_escape(value)
         [")"] = "\\29",
         ["\0"] = "\\00",
     }))
-end
-
---- Return an attribute as a list whatever lualdap returned
----
---- lualdap returns a string for one value, a table for several, and true
---- for an attribute that is present with no values.
----
---- @param value string|table|boolean|nil Attribute value from a search
---- @return table List of values, empty when absent
-local function _values_list(value)
-    if type(value) == "table" then
-        return value
-    end
-    if type(value) == "string" then
-        return { value }
-    end
-    return {}
-end
-
---- Return an attribute as one string whatever lualdap returned
----
---- @param value string|table|boolean|nil Attribute value from a search
---- @return string|nil First value, or nil when absent
-local function _value_first(value)
-    if type(value) == "table" then
-        return value[1]
-    end
-    if type(value) == "string" then
-        return value
-    end
-    return nil
 end
 
 --- Return the DN two levels above a DN
@@ -172,9 +142,9 @@ function _M.lookup(email)
 
     local identity = {
         sub = email,
-        uid = _value_first(person[ldap.attr_uid]),
+        uid = utils.list_first(person[ldap.attr_uid]),
         dn = person_dn,
-        groups = _values_list(person[ldap.attr_member_of]),
+        groups = utils.list_normalise(person[ldap.attr_member_of]),
         grants = {},
         support_tier = nil,
     }
@@ -195,13 +165,13 @@ function _M.lookup(email)
         -- 4. An agreement is active unless the attribute says FALSE, which is
         --    the reading the login gate applied before this module existed.
         --    An organisation with no attribute is treated as supported.
-        local active = _value_first(org[ldap.attr_support_active])
+        local active = utils.list_first(org[ldap.attr_support_active])
         if active ~= "FALSE" then
             identity.grants[#identity.grants + 1] = _M.GRANT_SUPPORTED
         end
 
         -- 5. The tier is the cn of the entry the class attribute points at.
-        local class_dn = _value_first(org[ldap.attr_support_class])
+        local class_dn = utils.list_first(org[ldap.attr_support_class])
         if class_dn then
             local class
             class, err = _entry_read(ld, class_dn, { "cn" })
@@ -210,7 +180,7 @@ function _M.lookup(email)
                 return nil, "support class read failed: " .. err
             end
             if class then
-                identity.support_tier = _value_first(class.cn)
+                identity.support_tier = utils.list_first(class.cn)
             end
         end
     end

@@ -15,6 +15,7 @@ local random = require "resty.random"
 local str = require "resty.string"
 
 local config = require "portier.config"
+local utils = require "portier.utils"
 local idp = require "portier.idp.init"
 local email_validate = require "portier.idp.email_validate"
 
@@ -57,15 +58,6 @@ local function _start_allowed()
     return idp.return_to_allowed(referer)
 end
 
---- Send the browser back to the login page with an error
----
---- @param email string  Address the user typed
---- @param message string Human-readable reason
-local function _login_error(email, message)
-    local url = idp.origin() .. "/.portier/login#" .. ngx.encode_args({ email = email, error = message })
-    return ngx.redirect(url, ngx.HTTP_MOVED_TEMPORARILY)
-end
-
 --- Whether the domain of an address accepts mail, by its MX records
 ---
 --- RFC 7505: a single MX of "." with preference 0 is a null MX, and means
@@ -100,14 +92,14 @@ function _M.run()
     if args.email == nil then
         return
     end
-    local email = idp.arg_string(args.email)
+    local email = utils.arg_string(args.email)
     if not email then
         return ngx.exit(ngx.HTTP_BAD_REQUEST)
     end
 
     -- 1. Only a page on this site may start a login in this browser.
     if not _start_allowed() then
-        ngx.log(ngx.WARN, "login start refused, cross-site request from ", idp.log_quote(ngx.var.http_referer or ngx.var.http_origin or "unknown"))
+        ngx.log(ngx.WARN, "login start refused, cross-site request from ", utils.log_quote(ngx.var.http_referer or ngx.var.http_origin or "unknown"))
         return ngx.exit(ngx.HTTP_FORBIDDEN)
     end
 
@@ -116,12 +108,12 @@ function _M.run()
     --    is not written to the log, only its length.
     if #email == 0 or email:find("%c") then
         ngx.log(ngx.WARN, "invalid address of ", #email, " bytes with control characters")
-        return _login_error(email, "email has no valid characters")
+        return idp.login_error(email, "email has no valid characters")
     end
     local valid, domain = email_validate.validemail(email)
     if not valid then
-        ngx.log(ngx.WARN, "invalid address: ", idp.log_quote(email))
-        return _login_error(email, "email is invalid")
+        ngx.log(ngx.WARN, "invalid address: ", utils.log_quote(email))
+        return idp.login_error(email, "email is invalid")
     end
 
     -- 3. The domain must accept mail, or the broker can never deliver.
@@ -129,13 +121,13 @@ function _M.run()
         local accepts, message = _domain_accepts_mail(domain)
         if not accepts then
             ngx.log(ngx.WARN, "domain refused for ", email, ": ", message)
-            return _login_error(email, message)
+            return idp.login_error(email, message)
         end
     end
 
     -- 4. Where to send the browser after login. Only a URL on an audience
     --    origin is accepted, so this is not an open redirect.
-    local return_to = idp.arg_string(args.return_to)
+    local return_to = utils.arg_string(args.return_to)
     if not return_to or not idp.return_to_allowed(return_to) then
         return_to = config.idp.landing_url
     end
@@ -144,7 +136,7 @@ function _M.run()
     local openid, err = idp.broker_json_get(config.idp.broker_url .. "/.well-known/openid-configuration")
     if not openid then
         ngx.log(ngx.ERR, "broker discovery failed: ", err)
-        return _login_error(email, "email authentication failed, please contact support")
+        return idp.login_error(email, "email authentication failed, please contact support")
     end
 
     -- 6. Remember the nonce and return URL for the verify phase. The broker

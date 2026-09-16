@@ -14,6 +14,7 @@ local cjson = require "cjson.safe"
 local pkey = require "resty.openssl.pkey"
 
 local config = require "portier.config"
+local utils = require "portier.utils"
 
 local _M = {}
 
@@ -36,21 +37,6 @@ local FETCH_LOCK_TTL = 5
 local KEY_TYPE = "EC"
 local KEY_CURVE = "P-256"
 local KEY_USE = "sig"
-
---- Read a JWKS from a file:// URL
----
---- @param path string Path after file://
---- @return string|nil Body, or nil on error
---- @return string|nil Error
-local function _document_read_file(path)
-    local f, err = io.open(path, "r")
-    if not f then
-        return nil, "cannot open " .. path .. ": " .. err
-    end
-    local data = f:read("*a")
-    f:close()
-    return data
-end
 
 --- Fetch a JWKS from an https:// URL
 ---
@@ -88,7 +74,7 @@ local function _document_load()
 
     local file_path = url:match("^file://(.+)$")
     if file_path then
-        body, err = _document_read_file(file_path)
+        body, err = utils.file_read(file_path)
     else
         body, err = _document_fetch_http(url)
     end

@@ -6,6 +6,7 @@
 -- cookie domain.
 
 local config = require "portier.config"
+local utils = require "portier.utils"
 local idp = require "portier.idp.init"
 
 local _M = {}
@@ -16,7 +17,7 @@ function _M.run()
     ngx.header["Set-Cookie"] = cookie.name .. "=; Domain=" .. cookie.domain .. "; Path=" .. cookie.path
         .. "; HttpOnly; Secure; SameSite=" .. cookie.same_site .. "; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
 
-    local return_to = idp.arg_string(ngx.req.get_uri_args().return_to)
+    local return_to = utils.arg_string(ngx.req.get_uri_args().return_to)
     if not return_to or not idp.return_to_allowed(return_to) then
         return_to = config.idp.landing_url
     end

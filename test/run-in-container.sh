@@ -14,6 +14,8 @@ cd /work
 luarocks install lua-resty-jwt >/dev/null 2>&1
 luarocks install lua-resty-openssl >/dev/null 2>&1
 luarocks install lua-resty-http >/dev/null 2>&1
+echo "== utils_spec"
+resty -I "$WORK/src" -I "$WORK/test" test/utils_spec.lua
 echo "== token_spec"
 resty -I "$WORK/src" -I "$WORK/test" test/token_spec.lua
 echo "== jwks fixture"

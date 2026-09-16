@@ -8,38 +8,29 @@ local cjson = require "cjson.safe"
 
 local config = require "portier.config"
 local token = require "portier.token"
+local utils = require "portier.utils"
 
 local _M = {}
 
---- Stop nginx at init when a required identity provider setting is unset
----
---- @param value any    Setting value
---- @param name string  Setting name for the message
-local function _require_set(value, name)
-    if value == nil or value == "" then
-        error("portier idp: " .. name .. " is not set in conf.lua")
-    end
-end
+--- Component name that prefixes every init failure message of the identity provider
+local COMPONENT = "portier idp"
 
-_require_set(config.idp.public_origin, "idp.public_origin")
-_require_set(config.idp.cookie.domain, "idp.cookie.domain")
-_require_set(config.idp.token.audience[1], "idp.token.audience")
-_require_set(config.idp.ldap.servers[1], "idp.ldap.servers")
-_require_set(config.idp.ldap.base_dn, "idp.ldap.base_dn")
-_require_set(config.idp.ldap.bind_dn, "idp.ldap.bind_dn")
+utils.setting_require(config.idp.public_origin, "idp.public_origin", COMPONENT)
+utils.setting_require(config.idp.cookie.domain, "idp.cookie.domain", COMPONENT)
+utils.setting_require(config.idp.token.audience[1], "idp.token.audience", COMPONENT)
+utils.setting_require(config.idp.ldap.servers[1], "idp.ldap.servers", COMPONENT)
+utils.setting_require(config.idp.ldap.base_dn, "idp.ldap.base_dn", COMPONENT)
+utils.setting_require(config.idp.ldap.bind_dn, "idp.ldap.bind_dn", COMPONENT)
 
 --- Origins a login may return to, as a set: the audiences plus the IdP
-local return_origins = {}
-for i = 1, #config.idp.token.audience do
-    return_origins[config.idp.token.audience[i]] = true
-end
+local return_origins = utils.set_from_list(config.idp.token.audience)
 return_origins[config.idp.public_origin] = true
 
 --- Signing key: { pem, kid, jwk }, see `portier.token.key_load`
 do
     local key, err = token.key_load()
     if not key then
-        error("portier idp: " .. err)
+        utils.fail(COMPONENT, err)
     end
     _M.key = key
 end
@@ -47,19 +38,6 @@ end
 --- Name of the short-lived cookie that carries the nonce and return URL
 --- across the broker round trip
 _M.LOGIN_COOKIE = "portier_login"
-
---- Decode base64url
----
---- @param s64url string base64url text
---- @return string|nil Decoded bytes, or nil when the text is not base64url
-function _M.base64url_decode(s64url)
-    local s64 = s64url:gsub("-", "+"):gsub("_", "/")
-    local pad = #s64 % 4
-    if pad > 0 then
-        s64 = s64 .. string.rep("=", 4 - pad)
-    end
-    return ngx.decode_base64(s64)
-end
 
 --- Rewrite an absolute URL as a path under the internal broker proxy location
 ---
@@ -103,27 +81,17 @@ function _M.origin()
     return config.idp.public_origin
 end
 
---- A request argument as a string, or nil
+--- Send the browser back to the login page with an error
 ---
---- nginx hands a repeated argument to Lua as a table and a bare `?name` as
---- `true`. Every argument the phases read goes through here, so a request
---- shaped like that is refused rather than raising inside the phase.
+--- The login page reads the email address and the reason from the URL
+--- fragment. Neither the address nor the reason therefore reaches the server
+--- log or the `Referer` header of the next request.
 ---
---- @param value any Value from `ngx.req.get_uri_args` or `get_post_args`
---- @return string|nil
-function _M.arg_string(value)
-    if type(value) == "string" then
-        return value
-    end
-    return nil
-end
-
---- Quote a request-supplied value for a log line
----
---- @param value any Value from the request
---- @return string Lua-quoted form, control characters escaped
-function _M.log_quote(value)
-    return string.format("%q", tostring(value))
+--- @param email string|nil Email address, when known
+--- @param message string   Human-readable reason
+function _M.login_error(email, message)
+    local url = _M.origin() .. "/.portier/login#" .. ngx.encode_args({ email = email or "", error = message })
+    return ngx.redirect(url, ngx.HTTP_MOVED_TEMPORARILY)
 end
 
 --- Whether a return URL may be redirected to after login
