@@ -1,6 +1,9 @@
 .*
 !.gitignore
-!.dockerignore
+!.github
 
 *.bak
+*.rockspec
+*.tar.gz
+*.src.rock
 test/fixtures/

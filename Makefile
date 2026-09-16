@@ -49,9 +49,13 @@ all: $(ROCKSPECS) $(ARCHIVES)
 %-$(VERSION).tar.gz:
 	@tar $(TAR_REWRITE_FLAG)"|^|$*-$(VERSION)/|" -czf $@ $($*_FILES) $($*_EXTRA)
 
+# Syntax check. luac -p on a host with PUC Lua; CI sets LUAC to
+# "luajit -bl" inside the OpenResty image, which has no luac.
+LUAC ?= luac -p
+
 .PHONY: check
 check:
-	@for f in src/portier/*.lua src/portier/*/*.lua; do luac -p $$f || exit 1; done
+	@for f in src/portier/*.lua src/portier/*/*.lua; do $(LUAC) $$f >/dev/null || exit 1; done
 
 .PHONY: clean
 clean:

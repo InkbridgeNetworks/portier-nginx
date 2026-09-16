@@ -1,0 +1,38 @@
+name: "CI"
+
+on:
+  workflow_call:
+
+jobs:
+  test:
+    timeout-minutes: 20
+    runs-on: self-hosted
+    # The specs run inside OpenResty itself, so the job container is the
+    # OpenResty image and no nested docker is needed. The tree is mounted at
+    # the workspace path; test/run-in-container.sh takes that path in WORK.
+    container:
+      image: openresty/openresty:bookworm-fat
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install packages (openssl for the fixtures, curl for the specs)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends openssl curl ca-certificates make
+
+      - name: Syntax-check every module
+        run: make check
+        env:
+          LUAC: /usr/local/openresty/luajit/bin/luajit -bl
+
+      - name: Generate the test keys
+        run: sh test/fixtures.sh
+
+      - name: Run the specs
+        run: WORK="$GITHUB_WORKSPACE" sh test/run-in-container.sh

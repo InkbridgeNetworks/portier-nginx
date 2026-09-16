@@ -1,0 +1,25 @@
+name: Publish packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      force_publish:
+        description: 'Force publish'
+        required: false
+        default: false
+        type: boolean
+  # Runs when the release CI run for a tag completes.
+  workflow_run:
+    workflows: ["CI - On release"]
+    types: [completed]
+
+jobs:
+  package:
+    # workflow_run fires for tags (publish only when that CI run passed);
+    # workflow_dispatch has no workflow_run context, so gate it on the event.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    uses: InkbridgeNetworks/package-repo/.github/workflows/lua-package.yml@master
+    with:
+      # Writes one versioned rockspec per rock.
+      build_cmd: make
+    secrets: inherit

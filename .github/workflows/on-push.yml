@@ -1,0 +1,11 @@
+name: "CI - On push"
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+  pull_request:
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
