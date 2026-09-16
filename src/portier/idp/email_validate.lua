@@ -1,7 +1,14 @@
+-- Email address syntax check
+--
 -- based on https://gist.github.com/james2doyle/67846afd05335822c149
-module(..., package.seeall)
+--
+-- The final pattern also forbids the characters ( ) * \ and other punctuation
+-- that is unsafe in an LDAP search value, because the address is used as a
+-- filter value by the directory lookup.
 
-function validemail(str)
+local _M = {}
+
+function _M.validemail(str)
   if (type(str) ~= 'string') then
     return nil, "Expected string"
   end
@@ -53,10 +60,12 @@ function validemail(str)
   if localPart:find("%.%.") then
     return nil, "Too many periods in local part"
   end
-  -- just a general match
-  if not str:match('[%w]*[%p]*%@+[%w]*[%.]?[%w]*') then
+  -- forbid the characters that are unsafe in an LDAP search value
+  if not str:match("^[A-Za-z0-9.!#$%%&'+/=?^_{|}~-]+@[A-Za-z0-9.-]+%.[A-Za-z]+$") then
     return nil, "Email pattern test failed"
   end
   -- all our tests passed, so we are ok
   return true, domainPart
 end
+
+return _M

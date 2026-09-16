@@ -1,126 +1,196 @@
-nginx [Portier](https://portier.github.io/) Authentication.
+# portier-nginx
 
-Handles all the Portier Relying Party (aka client side) work inside `nginx` and the result is an nginx variable set to the users email address that can be added to an HTTP header or FCGI variable to the application being served for use as an external authenticator.  Once authenticated, the user receives a session cookie that expires after 18 hours of inactivity.
+portier-nginx provides single sign-on for nginx applications, built on the
+[Portier](https://portier.github.io/) broker. The broker proves that a user
+owns an email address. portier-nginx turns the proof into a signed session
+token. Any nginx server in the deployment verifies the token without
+contacting the broker or the Lightweight Directory Access Protocol (LDAP)
+directory again.
 
-Project sponsored by [NetworkRADIUS](https://networkradius.com/).
+This repository builds two LuaRocks packages (rocks):
 
-# Pre-flight
+ * **`portier-idp`**, the identity provider. The identity provider runs the
+   broker login flow and looks the verified email address up in an LDAP
+   directory. The lookup yields the identity and entitlements of the user.
+   The identity provider then mints the session token and publishes the
+   public key that verifies the token.
+ * **`portier-sp`**, the service provider. The service provider verifies the
+   session token on every request to a protected application, applies the
+   policy of the application to the claims, and passes the application a
+   `REMOTE_USER`.
 
-You will require:
+[NetworkRADIUS](https://networkradius.com/) sponsors the project.
 
- * nginx with Lua support, and your application running on it
-     * [`lua-json`](https://github.com/harningt/luajson)
-     * [`lua-luaossl`](http://25thandclement.com/~william/projects/luaossl.html)
-     * [`lua-nginx-dns`](https://github.com/openresty/lua-resty-dns)
-     * [`lua-nginx-string`](https://github.com/openresty/lua-resty-string)
+# How a login works
 
-## Debian
+1. The browser asks for a protected page on a service provider. The request
+   does not carry a session cookie, so the service provider answers according
+   to `sp.anonymous`. The service provider either returns status 401 or
+   redirects the browser to the login page of the identity provider with the
+   page URL in `return_to`.
+2. The user types an email address on the login page. The identity provider
+   checks the email address, sets a short-lived cookie that holds a nonce and
+   the return URL, and sends the browser to the broker.
+3. The broker verifies the email address and posts an RS256 `id_token` back
+   to the verify location of the identity provider.
+4. The identity provider verifies the `id_token` against the published keys
+   of the broker, matches the nonce, and looks the email address up in the
+   directory. From the person entry, the identity provider reads the `uid`
+   and the group memberships. From the organisation entry two levels above
+   the person, the identity provider reads the support agreement state and
+   the support tier. An agreement that is not marked inactive yields the
+   `supported` grant. When the directory has no person entry for the email
+   address, the identity provider does not mint a token.
+5. The identity provider mints an ES256 session token with the claims from
+   step 4. The identity provider sets the token as an `HttpOnly`, `Secure`,
+   `SameSite=Lax` cookie on the shared parent domain, then redirects the
+   browser to the return URL.
+6. Every request to a service provider now carries the cookie. The service
+   provider verifies the signature against the JSON Web Key Set (JWKS) of the
+   identity provider, then checks `iss`, `aud`, and `exp`. The service
+   provider then applies the policy of the application, strips the cookie
+   from the `Cookie` header, and sets `$portier_nginx_uid`. The site passes
+   `$portier_nginx_uid` to the application as `REMOTE_USER`.
 
-    apt-get -yy install --no-install-recommends \
-    	ca-certificates \
-    	libnginx-mod-http-lua \
-    	lua-json \
-    	lua-luaossl \
-    	lua-nginx-dns \
-    	lua-nginx-string \
-    	nginx-full
+The identity provider asserts who the user is and what the user is entitled
+to. Each service provider decides which users to admit. A customer whose
+support agreement has lapsed still receives a token, but the token does not
+carry the `supported` grant. A support portal can therefore admit the
+customer while a ticketing system refuses the customer with a renewal
+message.
+
+# Token
+
+    header:  { typ = "JWT", alg = "ES256", kid = <key id> }
+    payload: { iss, aud = { <audience>, ... }, iat, exp,
+               sub = <email>, uid, groups = { <dn>, ... },
+               grants = { <grant>, ... }, support_tier }
+
+`aud` is always a list. Both the identity provider and the service provider
+check that the token header names ES256 before reading any key. Both
+therefore refuse a token that names HS256 before reading a key. The identity
+provider derives the key id from the public key unless `idp.token.kid` sets
+the key id.
+
+# Layout
+
+The Lua modules are in `src/portier`.
+
+ * **`config.lua`:** merges the built-in defaults with the `portier/conf.lua`
+   of the deployment. The deployment puts `portier/conf.lua` on
+   `lua_package_path`.
+ * **`token.lua`:** loads the signing key, mints the session token, defines the
+   claim specification, and verifies the session token.
+ * **`sp/init.lua`:** builds the service provider state once per worker.
+ * **`sp/jwks.lua`:** fetches and caches the JWKS of the identity provider.
+ * **`sp/access.lua`:** runs the access phase for a protected location.
+ * **`idp/init.lua`:** builds the identity provider state, including the
+   signing key, once per worker.
+ * **`idp/login.lua`:** starts the broker login flow.
+ * **`idp/verify.lua`:** verifies the `id_token` that the broker posts back,
+   looks the email address up in the directory, and mints the session
+   cookie.
+ * **`idp/directory.lua`:** looks the email address up in the directory and
+   returns the identity and entitlements of the user.
+ * **`idp/jwks.lua`:** publishes the public key.
+ * **`idp/logout.lua`:** clears the session cookie.
+ * **`idp/email_validate.lua`:** checks the syntax of an email address.
+
+`etc/nginx/` holds the snippets that a virtual host (vhost) includes.
+`portier-sp-http.conf` goes in the http block of a service provider.
+`portier-idp-http.conf` and `portier-idp.conf` go in the http and server
+blocks of the identity provider. `portier-example.conf` is a complete sample
+that includes the identity provider snippets and the service provider
+snippet.
+
+`webroot/index.html` is the login page. A deployment may point the login
+location at a branded copy.
+
+# Requirements
+
+Both rocks need OpenResty, or nginx with the Lua module running on LuaJIT.
+The rockspecs install the Lua dependencies: `lua-resty-jwt`,
+`lua-resty-openssl`, `lua-resty-http`, `lua-resty-string`, and `lua-cjson`
+for both rocks, plus `lualdap` and `lua-resty-dns` for the identity
+provider. `lualdap` contains C code and needs the OpenLDAP headers and a C
+toolchain at install time.
 
 # Deploy
 
-The install process is pretty awful, mostly as everyone's application environment is a bit bespoke, but these guidelines below should get you moving:
+## Both rocks
 
- 1. create a directory `/opt/portier/nginx`
- 1. copy all the `*.lua` files and [`nginx-env`](nginx-env) from this project into it
- 1. symlink/copy [`nginx.mod`](nginx.mod) to `/etc/nginx/modules-enabled/99-portier-nginx.conf`
- 1. patch `/lib/systemd/system/nginx.service` with [`nginx-env-service.patch`](nginx-env-service.patch)
- 1. copy [`webroot`](webroot) from this project into it
- 1. inspect the sample [`ngnix`](nginx) configuration in the project
-     * the portier-nginx parts are top-and-tailed with `####`
-     * extract the `http { ... }` and `server { ... }` sections and graft them into your own nginx configuration
-     * in the example `location / { ... }` shows how to use `a.lua` with HTTP (setting `X-Portier-Nginx-Email`) and FCGI (setting `REMOTE_USER`) backends
- 1. follow the configuration instructions below, typically requires editing [`/opt/portier/nginx/nginx-env`](nginx-env)
- 1. restart nginx
+1. Run `luarocks install portier-sp` on every service provider host, and run
+   `luarocks install portier-idp` on the identity provider host.
+2. Write `/etc/portier/portier/conf.lua`. The file returns a table whose keys
+   override the defaults in `src/portier/config.lua`. `src/portier/config.lua`
+   documents every key. A deployment-specific key does not have a default,
+   so `conf.lua` must set the directory servers, the cookie domain, the key
+   path, the audiences, and the policy.
+3. Add `/etc/portier` to `lua_package_path`, so nginx finds `conf.lua` as the
+   module `portier.conf`:
 
-Hopefully everything starts up okay, and depending on how you reconciled the [sample `nginx` configuration](nginx) with your existing one, when you open your application you should be directed to a login screen.
+       lua_package_path '/etc/portier/?.lua;;';
 
-Type in your email address, walk through the authentication flow and you then should be able to access your application.
+4. Load the service provider state at startup, so a bad key or a bad config
+   stops nginx at startup rather than failing the first request:
 
-To logout, send the user to `/.portier/logout` which will delete the cookie and redirect the user to `/`.
+       init_by_lua_block { require "portier.sp.init" }
 
-## Configuration
+   On the identity provider, require `portier.idp.init` instead. nginx
+   allows one `init_by_lua_block` per http block, so the snippets do not
+   include the `init_by_lua_block` directive.
 
-Where environment variables are described, to update them edit `/opt/portier/nginx/nginx-env` and run:
+## Identity provider
 
-    systemctl restart nginx
+1. Generate a P-256 key and write the PEM file to the path that
+   `idp.token.key_file` names. Make the file readable by the nginx worker
+   user only:
 
-### Login Page
+       openssl ecparam -name prime256v1 -genkey -noout | openssl pkcs8 -topk8 -nocrypt -out /etc/portier/signing_key.pem
 
-Edit [`webroot/index.html`](webroot/index.html) to suit your cosmetic needs.
+2. Write the directory bind password, as one line, to the path that
+   `idp.ldap.bind_pw_file` names.
+3. Include `portier-idp-http.conf` in the http block, and include
+   `portier-idp.conf` in the server block that answers on the origin of the
+   identity provider. When TLS terminates on a proxy in front of nginx, set
+   `idp.public_origin` in `conf.lua`.
+4. Register the origin with the broker as an allowed origin.
 
-On errors, the user will be redirected to the login page, but in the [fragment](https://en.wikipedia.org/wiki/Fragment_identifier) will be a the following query string encoded key value pairs:
+## Service provider
 
- * **`email`:** address supplied
- * **`error`:** human readable message
+1. Include `portier-sp-http.conf` in the http block.
+2. In every protected location, declare `$portier_nginx_uid` and
+   `$portier_nginx_email`, run the access phase, and pass the uid to the
+   application as `REMOTE_USER`:
 
-You may wish to use these values to indicate why the email address supplied failed.
+       location / {
+           set $portier_nginx_uid "";
+           set $portier_nginx_email "";
+           access_by_lua_block { require("portier.sp.access").run() }
+           fastcgi_param REMOTE_USER $portier_nginx_uid;
+           ...
+       }
 
-### Broker
+3. In `conf.lua`, set `sp.jwks_url` to the JWKS URL of the identity
+   provider, `sp.issuer` to the origin of the identity provider, and
+   `sp.audience` to the audience of the application. Then set the policy:
+   `sp.policy.grants_required`, `sp.policy.groups_denied`, and a refusal
+   message per grant in `sp.refusal_messages`.
 
-By default, the broker used is `https://broker.portier.io` but this is can be overridden by setting the environment variable `PORTIER_BROKER` to another URL.
-
-### Nameservers
-
-By default, the nameservers used to assist in email address validation are [Google's resolvers](https://developers.google.com/speed/public-dns/), but this can be overridden by setting the environment variable `PORTIER_NAMESERVERS` to a whitespace seperated list of nameservers to use.
-
-**N.B.** if you change this, you should also change [`resolver`](http://nginx.org/en/docs/http/ngx_http_core_module.html#resolver) in the `nginx` configuration too
-
-### Runtime Secret
-
-When you start `nginx` you will see a warning in your error log similar to:
-
-    2018/08/03 14:46:58 [warn] 8659#8659: [lua] i.lua:51: using runtime secret
-
-This is harmless, but will mean every time you reload nginx any currently authenticated users will be logged out.  To prevent this you can set the secret to a static value with:
-
-    dd if=/dev/urandom of=/opt/portier/nginx/secret bs=1 count=16
-    chmod 640 /opt/portier/nginx/secret
-    chown root:www-data /opt/portier/nginx/secret
-
-### Authorization
-
-You may wish to test externally the email address if it is authorized to connect.
-
-To do set the environment variable `PORTIER_AUTHORIZE`; on how to use this you can inspect the provided [examples (`authz*.lua`)](examples).
-
-If your function returns `true`, authorization is considered successful.  If you return `false` then the user is rejected, though instead you can return a string instead and the value will be returned to the user to communicate the reason for the authorization failed (eg. expired account, time of day, ...).
-
-If your function explodes, then authorization is considered failed and the user is shown the same message as if you returned `false`.
+To log a user out, send the browser to `/.portier/logout` on the identity
+provider.
 
 # Development
 
-Almost the easiest thing here is to slum it with a Docker container (sorry, it is awful) where you can run:
+`test/run.sh` runs the test specifications (specs) under OpenResty in a
+container and needs docker. On the first run, `test/run.sh` generates a test
+signing key and a broker key.
 
-    docker build -t portier-nginx .
-    docker run -it --rm -p 1080:80 portier-nginx
+ * **`test/token_spec.lua`:** tests the token module in-process.
+ * **`test/sp_spec.sh`:** runs curl against a service provider vhost.
+ * **`test/idp_spec.sh`:** runs curl against an identity provider vhost that
+   uses a broker stub and a directory stub, then presents the minted cookie
+   to the service provider vhost.
 
-Now from within the container run:
-
-    /etc/init.d/nginx start
-    php -S 127.0.0.1:8000 -t /opt/portier/nginx/webroot
-
-On your workstation, point your browser at http://localhost:1080 and type in your email address to start off the authentication.  If it is successful, you should see the [`phpinfo()`](https://secure.php.net/manual/en/function.phpinfo.php) splash screen and if you scroll down you should find `$_SERVER['HTTP_X_PORTIER_NGINX_EMAIL']` is set to your email address.
-
-## Functional Description
-
-After a successful authentication, portier-nginx sets the session cookie `portier-nginx-email` and then uses that going forward.  The cookie is made up of the tuple:
-
-    [hmac type]:[hmac truncated to 80bits]:[created time]:[email]
-
-Currently [`md5`](https://tools.ietf.org/html/rfc6151#section-2.3) is used as the HMAC hash function, the HMAC is [truncated to 80bits](https://tools.ietf.org/html/rfc2104#section-5), and these cookies expire after 18 hours of inactivity (renewing on each request during their validity).
-
-Each lua file servers a particular purpose:
-
- * **[`i.lua`](i.lua):** sets the global variables that will be used by all the workers; including the secret
- * **[`a.lua`](a.lua):** tests if the user has a valid `portier-nginx-email` cookie, if not it redirects them to login
- * **[`l.lua`](l.lua):** handles the email login flow
- * **[`v.lua`](v.lua):** validates the post back from the portier broker
+`make` builds both rocks from the source tree. `make check` syntax-checks
+every module.

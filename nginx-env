@@ -1,4 +1,0 @@
-PORTIER_BROKER=https://broker.portier.io
-PORTIER_NAMESERVERS="1.1.1.1 1.0.0.1"
-#PORTIER_AUTHORIZE=examples/authz.lua
-#PORTIER_AUTHORIZE=examples/authz-ldap.lua
